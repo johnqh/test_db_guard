@@ -75,27 +75,31 @@ the run. Repos pin an exact version.
 ### API
 
 ```ts
-setupTestDatabase(): string | null
-assertLocalTestDb(): string
-hasLocalTestDb(): boolean
+scrubDatabaseUrl(): void
+setupTestDatabase(): string
 ```
 
-`setupTestDatabase()` is what every repo's setup file calls. Three steps, in
-this order:
+Two entry points, matching the two test scripts.
 
-1. **Unconditionally `delete process.env.DATABASE_URL`.** This is the core of
-   the fix. The ambient value is scrubbed before anything can read it,
-   independent of whether `TEST_DATABASE_URL` is set. A production URL in the
-   shell cannot reach application code even in the failure paths below.
-2. If `TEST_DATABASE_URL` is unset, return `null`. No database is reachable, by
-   construction — not by policy.
-3. If set, validate it (below). On success, assign
-   `process.env.DATABASE_URL = url` and return it. On failure, throw.
+`scrubDatabaseUrl()` is called by the **unit** setup file. It does exactly one
+thing: `delete process.env.DATABASE_URL`. Unit runs must never reach a
+database, so the ambient value is removed outright. If a unit test ever does
+try to open a connection, it fails on a missing variable instead of silently
+finding production.
 
-`assertLocalTestDb()` is for integration suites that must not silently skip: it
-throws when `TEST_DATABASE_URL` is unset rather than returning `null`.
+`setupTestDatabase()` is called by the **DB** setup file. In order:
 
-`hasLocalTestDb()` returns a boolean for `describe.skipIf(...)` gating.
+1. `delete process.env.DATABASE_URL` — the ambient value is never trusted, even
+   here.
+2. Read `TEST_DATABASE_URL`. If unset, **throw**. There is no skip path: this
+   file is only loaded by `test:db`, which exists to exercise a database.
+3. Validate it (below). On failure, throw.
+4. Assign `process.env.DATABASE_URL = url` and return it.
+
+There is no `hasLocalTestDb()` and no `describe.skipIf` gating. Runtime
+skipping was only needed when DB tests shared a run with unit tests; separating
+the scripts removes the need. A DB test that cannot reach a database is an
+error, not a skip.
 
 ### Validation rules
 
@@ -119,67 +123,119 @@ both; that is why the check parses.
 
 Error messages name the offending hostname.
 
-### Behavior when unset
+### Test script separation
 
-Unit suites stay green on machines with no Postgres: `setupTestDatabase()`
-returns `null` and DB-backed suites skip via `hasLocalTestDb()`.
+This is the structural half of the fix, and it is what keeps CI safe.
 
-Integration entry points call `assertLocalTestDb()` and hard-fail with a
-message naming the variable and a valid example. A suite that exists to
-exercise the database never reports success without touching one.
+| Script | Runner config | Collects | Touches DB | Runs in CI |
+|---|---|---|---|---|
+| `bun run test` | `vitest.config.ts` | everything **except** `**/*.db.test.ts` | never | yes |
+| `bun run test:db` | `vitest.db.config.ts` | **only** `**/*.db.test.ts` | always | **no — manual only** |
 
-## Per-repo wiring
+DB-backed tests are excluded from `bun run test` by *collection*, not by a
+runtime skip. Vitest never loads the files, so there is no code path in which a
+CI run opens a database connection. The `scrubDatabaseUrl()` call in the unit
+setup is defense in depth behind that, not the primary control.
 
-Eighteen repos, two runners. Three repos run both and need both wirings.
+`test:db` is run by hand. It is never invoked by any workflow.
 
-### vitest — `setupFiles` in `vitest.config.ts`
+**Consequence, accepted deliberately:** CI loses database coverage entirely.
+`webgraph_api` currently runs DB-backed integration tests against a Postgres
+service container on every push; that workflow is removed. The tradeoff is
+that database regressions are caught only when someone runs `test:db` locally.
+This is the explicit instruction — no test involving a database executes during
+CI/CD.
 
-**Config must be created (9):** `shapeshyft_api`, `shaperouter_api`,
-`sudojo_api`, `tapayoka_api`, `mixr_api`, `genuivo_api`, `mogulgame_api`,
-`starter_api`, `svgr_api`
+### File naming convention
 
-**Config exists, `setupFiles` must be added (4):** `whisperly_api`,
-`music_api`, `heavymath_indexer`, `zerodowntime/craigsnotice_api`
+A DB-backed test is named `*.db.test.ts`. The suffix, not the directory, is
+what both configs key on.
 
-**Config already has `setupFiles`, point it at the guard (1):**
-`mail_box_indexer`
+Suffix rather than directory because the 18 repos have incompatible layouts —
+`src/routes/*.integration.test.ts` in `music_api`, `tests/integration/` in
+`webgraph_api`, `tests/*.test.ts` in `shapeshyft_api`. A suffix lets every
+existing file stay where it is and be renamed, instead of forcing a
+simultaneous relocation across 18 repos.
 
-### bun test — `preload` in `bunfig.toml`
+## Unified test architecture
 
-**`bunfig.toml` must be created (3):** `testomniac_api`, `entitystarter_api`,
-`webgraph_api`
+Every one of the 18 repos converges on the same shape. No per-repo variation.
 
-**`bunfig.toml` exists (1):** `sider_api` — its preload is
-`["./src/test/no-ai-calls.ts"]`, an unrelated guard that must be preserved.
-Append, do not replace.
+```
+vitest.config.ts          exclude **/*.db.test.ts, setupFiles: tests/setup.ts
+vitest.db.config.ts       include **/*.db.test.ts, setupFiles: tests/setup.db.ts
+tests/setup.ts            calls scrubDatabaseUrl()
+tests/setup.db.ts         calls setupTestDatabase()
+.env.test                 committed; TEST_DATABASE_URL=postgresql://localhost:5432/<repo>_test
+package.json
+  "test":     "vitest run"
+  "test:db":  "vitest run --config vitest.db.config.ts"
+```
 
-### Repos needing both wirings
+`bunfig.toml` test configuration is deleted everywhere. It is the source of the
+misfires described above, and once every repo runs vitest it has no role.
 
-`shapeshyft_api`, `shaperouter_api`, `sudojo_api` — unit runs under vitest,
-`test:integration` runs under `bun test`. Their existing `bunfig.toml` entries
-stay; vitest config is added alongside.
+### Runner unification: vitest
 
-### Genuinely dead config to remove
+The workspace is already predominantly vitest — 245 test files import `vitest`
+against 75 importing `bun:test`. Converging on vitest is the smaller migration
+and the one that preserves the existing majority.
 
-`tapayoka_api` and `whisperly_api` have `bunfig.toml` preloads with no `bun
-test` script to trigger them. Remove once vitest wiring is in place.
+Files importing `bun:test` are migrated to `vitest`. Affected repos, by file
+count:
 
-### Env files
+| Repo | `bun:test` files | Note |
+|---|---|---|
+| `sider_api` | 51 | Only fully bun-native repo; the bulk of the migration |
+| `sudojo_api` | 10 | Integration suites |
+| `shapeshyft_api` | 6 | Integration suites |
+| `shaperouter_api` | 6 | Integration suites |
+| `webgraph_api` | 2 | Integration suites |
 
-Every repo commits `.env.test.example` containing a localhost
-`TEST_DATABASE_URL`. `.env.test` remains gitignored. Five repos already have
-`.env.test` and are migrated in place: `sudojo_api`, `music_api`,
-`shapeshyft_api`, `tapayoka_api`, `shaperouter_api`.
+`describe`, `it`, `expect`, `beforeAll`, `afterAll`, and `beforeEach` are
+import-compatible between the two. The incompatibility is mocking: Bun's
+`mock()` and `spyOn()` from `bun:test` become `vi.fn()` and `vi.spyOn()` from
+`vitest`. Each migrated file is checked for these.
 
-`sudojo_api`'s `test:integration` guards on `.env.test` existing; that check is
-superseded by `assertLocalTestDb()` and is removed.
+`testomniac_api` and `entitystarter_api` run `bun test` as their script while
+their test files already import from `vitest` — they need only the script
+change.
+
+### Per-repo starting state
+
+| Repo | vitest config | Has `bun:test` | DB tests to rename |
+|---|---|---|---|
+| `shapeshyft_api` | none | 6 | `tests/*.test.ts` |
+| `shaperouter_api` | none | 6 | `tests/*.test.ts` |
+| `sudojo_api` | none | 10 | integration dirs |
+| `tapayoka_api` | none | 0 | `tests/` DB suites |
+| `mixr_api` | none | 0 | `tests/*.test.ts` |
+| `genuivo_api` | none | 0 | none yet |
+| `mogulgame_api` | none | 0 | none yet |
+| `starter_api` | none | 0 | none yet |
+| `svgr_api` | none | 0 | none yet |
+| `whisperly_api` | exists, no `setupFiles` | 0 | `tests/` DB suites |
+| `music_api` | exists, no `setupFiles` | 0 | `src/**/*.integration.test.ts` |
+| `heavymath_indexer` | exists, no `setupFiles` | 0 | `**/*integration*.test.ts` |
+| `craigsnotice_api` | exists, no `setupFiles` | 0 | `tests/` DB suites |
+| `mail_box_indexer` | exists, has `setupFiles` | 0 | `**/*integration*.test.ts` |
+| `sider_api` | none | 51 | DB-backed suites |
+| `testomniac_api` | none | 0 | none yet |
+| `entitystarter_api` | none | 0 | none yet |
+| `webgraph_api` | none | 2 | `tests/integration/` |
+
+`sider_api`'s `bunfig.toml` preloads `./src/test/no-ai-calls.ts`, an unrelated
+guard that refuses model-provider calls during tests. That protection is
+preserved by moving it into `tests/setup.ts` before `bunfig.toml` is deleted.
 
 ## CI
 
-`webgraph_api/.github/workflows/integration.yml` renames its injected
-`DATABASE_URL` to `TEST_DATABASE_URL`. The value already uses host `localhost`
-and passes strict validation unchanged. No other workflow in the workspace
-injects a database URL.
+`webgraph_api/.github/workflows/integration.yml` is **deleted**, along with its
+Postgres service container. It is the only workflow in the workspace that runs
+database-backed tests, and the requirement is that none run in CI/CD.
+
+Every repo's CI continues to run `bun run test`, which now provably collects no
+DB test file.
 
 ## Code removed
 
@@ -188,7 +244,10 @@ injects a database URL.
 - `music_api`'s `.includes("test")` check and its hand-rolled `.env.test` parser.
 - `craigsnotice_api`'s `.includes("_test")` check and its `CI`-conditional URL.
 - `sudojo_api`'s `test -f .env.test ||` shell guard in `test:integration`.
-- Dead `bunfig.toml` preloads in `tapayoka_api` and `whisperly_api` only.
+- All `bunfig.toml` `[test]` configuration, in all repos.
+- `webgraph_api/.github/workflows/integration.yml`.
+- Every `test:integration`, `test:unit`, and `test:run` script, replaced by the
+  two-script convention.
 
 ## Verification
 
@@ -196,28 +255,37 @@ The package carries table-driven unit tests over hostnames, including
 production-shaped URLs, the IP form, credentialed URLs, port-less URLs, and
 non-postgres protocols.
 
-Each of the 18 repos is verified twice:
+Each of the 18 repos is verified three ways:
 
-1. With `TEST_DATABASE_URL` set to a localhost URL — suite passes.
-2. With `TEST_DATABASE_URL` unset and
-   `DATABASE_URL=postgresql://fake-prod.example.com/main` exported — the run
-   must not connect to anything. This is the regression test for the original
-   bug, and it is the check that would have failed before this change.
+1. `bun run test` with `DATABASE_URL=postgresql://fake-prod.example.com/main`
+   exported and `TEST_DATABASE_URL` unset — passes, and collects zero
+   `*.db.test.ts` files. This is the CI-safety check.
+2. `bun run test:db` with `TEST_DATABASE_URL` set to a localhost URL — passes.
+3. `bun run test:db` with `TEST_DATABASE_URL=postgresql://fake-prod.example.com/main`
+   — fails with a message naming the host. This is the regression test for the
+   original bug.
 
-For the three dual-runner repos, both checks run against `test` *and*
-`test:integration`, since the two use different runners and different wiring.
+Check 1 asserts on the collected-file count, not just the exit code. A green
+run that silently collected nothing would otherwise look identical to a green
+run that correctly excluded DB tests.
 
 ## Rollout order
 
 1. Publish `@sudobility/test-db-guard`.
-2. The 11 repos with real DB tests: `shapeshyft_api`, `shaperouter_api`,
-   `sudojo_api`, `tapayoka_api`, `whisperly_api`, `music_api`, `webgraph_api`,
-   `mixr_api`, `sider_api`, `mail_box_indexer`,
-   `zerodowntime/craigsnotice_api`.
-3. The 5 with thin or no DB tests: `genuivo_api`, `mogulgame_api`, `svgr_api`,
+2. `shapeshyft_api` first, as the reference implementation — it has a vitest
+   unit suite, a `bun:test` integration suite, an existing `.env.test`, and a
+   `bunfig.toml` to delete, so it exercises every part of the migration.
+3. The remaining 10 repos with real DB tests: `shaperouter_api`, `sudojo_api`,
+   `tapayoka_api`, `whisperly_api`, `music_api`, `webgraph_api`, `mixr_api`,
+   `sider_api`, `mail_box_indexer`, `zerodowntime/craigsnotice_api`.
+4. The 5 with thin or no DB tests: `genuivo_api`, `mogulgame_api`, `svgr_api`,
    `testomniac_api`, `heavymath_indexer`.
-4. The 2 templates last, so forks inherit a settled convention:
+5. The 2 templates last, so forks inherit a settled convention:
    `starter_api`, `entitystarter_api`.
+
+`sider_api` is sequenced late within step 3 despite having real DB tests: its
+51-file `bun:test` migration is the largest single unit of work and benefits
+from the pattern being settled first.
 
 ## Decisions
 
@@ -225,20 +293,28 @@ For the three dual-runner repos, both checks run against `test` *and*
 |---|---|---|
 | Accepted hosts | `localhost` only, strictly | Nothing in the workspace uses the IP form; strictness is free |
 | Variable name | `TEST_DATABASE_URL` | Conventional, greppable, cannot collide with a deploy env |
-| Unset behavior | Skip unit, hard-fail integration | Keeps the default `test` script green without Postgres |
+| DB tests in CI | Never — `test:db` is manual only | Explicit requirement; enforced by collection, not by runtime skip |
+| DB test marker | `*.db.test.ts` suffix | Layouts differ across repos; a suffix avoids relocating files |
+| Runner | vitest everywhere | 245 vitest files vs 75 `bun:test`; smaller migration |
 | Scope | All 18, templates included | Forks inherit the guard |
 | Distribution | Shared npm package | Single source of truth; bootstrap risk mitigated by top-level import and exact pinning |
 
 ## Risks
 
+**CI no longer catches database regressions.** Directly implied by the
+requirement. `webgraph_api` loses the only automated DB coverage in the
+workspace. Mitigation is procedural: `test:db` before releasing an API.
+
 **A repo that never installs the package has no guard.** Mitigated by the
-top-level import: resolution fails loudly. Not fully eliminated for a repo
-nobody adds the dependency to — the rollout checklist is the control.
+top-level import in `tests/setup.ts`: resolution fails loudly. The rollout
+checklist is the control.
 
 **Eighteen repos pin an exact version.** A guard change means 18 bumps.
 Accepted in exchange for a single source of truth. Note the workspace gotcha
 that npm reserves unpublished versions: a failed publish requires a patch bump
 rather than a retry.
 
-**Nine new vitest configs.** Repos that ran vitest on defaults gain a config
-file. Each contains only `setupFiles` — no behavior change beyond the guard.
+**`sider_api`'s 51-file migration is the single largest risk of regression.**
+Its `bun:test` mocking calls have no automatic translation. Every `mock(` and
+`spyOn(` occurrence is converted by hand and the suite compared against its
+pre-migration pass count.
