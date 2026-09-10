@@ -41,6 +41,12 @@ rejected `TEST_DATABASE_URL` cannot leave an ambient production value in place.
   That is correctly rejected — it is not a test path.
 - `tsc --noEmit` fails with TS18003 if `src/` is empty. Expected before any
   source file exists.
+- **Relative imports in `src/` must carry a `.js` extension.** `tsc` emits the
+  specifier verbatim, and while Bun and vite resolve extensionless paths, plain
+  Node's ESM resolver does not — and vitest hands bare dependencies to Node.
+  Shipping `from "./validate"` broke `import()` in every consumer while every
+  local test still passed. `bun run verify:dist` loads `dist/index.js` under
+  Node specifically to catch this; it runs in `prepublishOnly`.
 
 ## Related projects
 

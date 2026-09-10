@@ -607,7 +607,7 @@ git commit -m "docs: add README and CLAUDE.md"
 
 **Interfaces:**
 - Consumes: Tasks 1-4.
-- Produces: `@sudobility/test-db-guard@1.0.1` on npm, installable by every repo in Phase 2 and Phase 3.
+- Produces: `@sudobility/test-db-guard@1.0.2` on npm, installable by every repo in Phase 2 and Phase 3.
 
 Publishing goes through the workspace's shared GitHub Actions pipeline, not a
 local `npm publish`. The workflow delegates to `johnqh/workflows`
@@ -752,7 +752,7 @@ helper. Whatever is learned here is what Phase 3 repeats 17 times.
 - Rename: `tests/ai.test.ts`, `tests/analytics.test.ts`, `tests/endpoints.test.ts`, `tests/keys.test.ts`, `tests/projects.test.ts`, `tests/provider-sync.test.ts` → `*.db.test.ts`
 
 **Interfaces:**
-- Consumes: `scrubDatabaseUrl`, `setupTestDatabase` from `@sudobility/test-db-guard@1.0.1`.
+- Consumes: `scrubDatabaseUrl`, `setupTestDatabase` from `@sudobility/test-db-guard@1.0.2`.
 - Produces: the canonical file set that Tasks 7-23 replicate — `vitest.config.ts`, `vitest.db.config.ts`, `tests/setup.ts`, `tests/setup.db.ts`, two package scripts.
 
 - [ ] **Step 1: Install the guard**
@@ -1030,7 +1030,7 @@ Two substitutions per repo:
 cd <REPO> && bun add -d -E @sudobility/test-db-guard
 node -pe "require('./package.json').devDependencies['@sudobility/test-db-guard']"
 ```
-Expected: `1.0.1` with no `^`.
+Expected: `1.0.2` with no `^`.
 
 **P2. Classify the test files.** A test file is database-backed if it reaches a
 real connection — directly, or through a helper such as `tests/setup.ts`,

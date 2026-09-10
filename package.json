@@ -1,6 +1,6 @@
 {
   "name": "@sudobility/test-db-guard",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Refuses to run database tests against anything but a localhost database",
   "license": "BUSL-1.1",
   "type": "module",
@@ -21,7 +21,8 @@
     "clean": "rm -rf dist",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run clean && bun run test && bun run build"
+    "prepublishOnly": "bun run clean && bun run test && bun run build && bun run verify:dist",
+    "verify:dist": "node -e \"import(process.cwd()+String.fromCharCode(47)+'dist/index.js').then(m=>{const k=Object.keys(m).sort().join(',');const want='TestDatabaseUrlError,scrubDatabaseUrl,setupTestDatabase,validateLocalTestDbUrl';if(k!==want){console.error('dist exports mismatch:',k);process.exit(1)}console.log('dist loads under node ESM:',k)})\""
   },
   "devDependencies": {
     "typescript": "^5.6.0",

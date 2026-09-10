@@ -1,4 +1,4 @@
-import { validateLocalTestDbUrl, TestDatabaseUrlError } from "./validate";
+import { validateLocalTestDbUrl, TestDatabaseUrlError } from "./validate.js";
 
 export { validateLocalTestDbUrl, TestDatabaseUrlError };
 
