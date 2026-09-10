@@ -1609,8 +1609,21 @@ separate task; run the procedure on each independently.
 | 21 | `testomniac_api` | `testomniac_test` | Script is `bun test src tests` but the 21 test files already import `vitest` — the script is the only thing to change. Also drop `test:contract`, folding `tests/contract` into the default run. No `bunfig.toml`. |
 
 For all four, P2 will find nothing to rename. Wire the guard, both configs, and
-both setup files anyway — that is the point of doing them. P13 confirms the
-guard rejects a production URL even with zero DB files collected.
+both setup files anyway — that is the point of doing them.
+
+**P13 cannot be run in these repos, and that is expected.** Vitest does not load
+`setupFiles` when no test file matches, so with zero `*.db.test.ts` the guard
+never executes and no refusal is printed. `bun run test:db` prints
+`No test files found` and exits 1.
+
+This is safe: with no database test there is nothing to protect, and
+`bun run test` still scrubs `DATABASE_URL`. Verify P12 only, and note the exit-1
+behavior in the repo's CLAUDE.md so it is not mistaken for a failure.
+
+Do **not** add `--passWithNoTests` to silence it. It would also mask a broken
+`include` glob in a repo that does have database tests — turning a
+collected-nothing run into a green one, which is the exact failure P12 exists to
+catch.
 
 - [ ] Task 18: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 · P11 · P12 · P13 · P14 · P15
 - [ ] Task 19: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 · P11 · P12 · P13 · P14 · P15
