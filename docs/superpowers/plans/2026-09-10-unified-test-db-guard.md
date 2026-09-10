@@ -599,16 +599,21 @@ git commit -m "docs: add README and CLAUDE.md"
 
 ---
 
-### Task 5: Publish
+### Task 5: Publish via CI
 
 **Files:**
-- Modify: none.
+- Create: `/Users/johnhuang/projects/test_db_guard/.github/workflows/ci-cd.yml`
+- Modify: `/Users/johnhuang/projects/test_db_guard/package.json` (version)
 
 **Interfaces:**
 - Consumes: Tasks 1-4.
-- Produces: `@sudobility/test-db-guard@1.0.0` on npm, installable by every repo in Phase 2 and Phase 3.
+- Produces: `@sudobility/test-db-guard@1.0.1` on npm, installable by every repo in Phase 2 and Phase 3.
 
-- [ ] **Step 1: Verify the package contents before publishing**
+Publishing goes through the workspace's shared GitHub Actions pipeline, not a
+local `npm publish`. The workflow delegates to `johnqh/workflows`
+`unified-cicd.yml`, matching `di` and 125 other repos.
+
+- [ ] **Step 1: Verify the package contents**
 
 ```bash
 cd /Users/johnhuang/projects/test_db_guard
@@ -629,18 +634,91 @@ node -pe "JSON.stringify(require('./package.json').dependencies ?? null)"
 Expected: `null`. If this prints an object, stop — a global constraint is
 violated.
 
-- [ ] **Step 3: Publish**
+- [ ] **Step 3: Add the CI/CD workflow**
+
+Copy the shape used by `di`:
+
+```yaml
+---
+# CI/CD workflow for test_db_guard
+# Automatically publishes to NPM when NPM_TOKEN is configured
+
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: write      # For creating GitHub releases
+  id-token: write      # For NPM provenance
+  deployments: write   # For deployment tracking
+
+jobs:
+  cicd:
+    uses: johnqh/workflows/.github/workflows/unified-cicd.yml@main
+    with:
+      npm-access: "public"
+    secrets: inherit  # Pass all repository secrets
+```
+
+`bun.lock` must be committed. Without it `unified-cicd` detects the wrong
+package manager and runs `npm ci`, which re-resolves the whole tree.
+
+- [ ] **Step 4: Create the GitHub repo and push**
 
 ```bash
 cd /Users/johnhuang/projects/test_db_guard
-npm publish --access public
+git branch -M main
+gh repo create johnqh/test_db_guard --public --source=. --remote=origin \
+  --description "Refuses to run database tests against anything but a localhost database"
+git push -u origin main
 ```
 
-If publish fails and reports the version is taken, bump the patch version and
-retry. npm reserves unpublished versions: the registry can 403 a republish
-while the package still reads as 404.
+The branch must be `main`. `git init` defaults to `master`, and the workflow
+triggers on `main` and `develop` only — on `master` it never fires.
 
-- [ ] **Step 4: Verify it installs from the registry**
+- [ ] **Step 5: Add the NPM_TOKEN secret**
+
+```bash
+gh secret set NPM_TOKEN --repo johnqh/test_db_guard --body "$(grep '//registry.npmjs.org/:_authToken=' ~/.npmrc | sed 's|.*_authToken=||' | tr -d '\r\n')"
+gh secret list --repo johnqh/test_db_guard
+```
+
+Expected: `NPM_TOKEN` listed.
+
+- [ ] **Step 6: Bump the version and push to trigger a publish**
+
+A CI run that completed before the secret existed will have succeeded while
+silently skipping the publish step — the workflow only publishes when
+`NPM_TOKEN` is present. Check first:
+
+```bash
+gh run list --repo johnqh/test_db_guard --limit 3
+npm view @sudobility/test-db-guard version
+```
+
+If the run succeeded but npm 404s, bump the patch version, commit, and push.
+
+- [ ] **Step 7: Wait for the registry**
+
+```bash
+for i in $(seq 1 18); do
+  v=$(npm view @sudobility/test-db-guard version 2>/dev/null)
+  [ -n "$v" ] && { echo "PUBLISHED: $v"; break; }
+  sleep 20
+done
+```
+
+Publication is not instant. Do not start Phase 2 until this prints a version.
+
+- [ ] **Step 8: Verify it installs from the registry**
 
 ```bash
 cd /private/tmp/claude-501/-Users-johnhuang-projects/d8271ec7-a240-475a-9e40-3a047787aed2/scratchpad
@@ -651,13 +729,6 @@ node -e "import('@sudobility/test-db-guard').then(m => console.log(Object.keys(m
 ```
 
 Expected: `TestDatabaseUrlError,scrubDatabaseUrl,setupTestDatabase,validateLocalTestDbUrl`
-
-- [ ] **Step 5: Commit the lockfile if it changed**
-
-```bash
-cd /Users/johnhuang/projects/test_db_guard
-git add -A && git commit -m "chore: release v1.0.0" || echo "nothing to commit"
-```
 
 ---
 
@@ -681,7 +752,7 @@ helper. Whatever is learned here is what Phase 3 repeats 17 times.
 - Rename: `tests/ai.test.ts`, `tests/analytics.test.ts`, `tests/endpoints.test.ts`, `tests/keys.test.ts`, `tests/projects.test.ts`, `tests/provider-sync.test.ts` → `*.db.test.ts`
 
 **Interfaces:**
-- Consumes: `scrubDatabaseUrl`, `setupTestDatabase` from `@sudobility/test-db-guard@1.0.0`.
+- Consumes: `scrubDatabaseUrl`, `setupTestDatabase` from `@sudobility/test-db-guard@1.0.1`.
 - Produces: the canonical file set that Tasks 7-23 replicate — `vitest.config.ts`, `vitest.db.config.ts`, `tests/setup.ts`, `tests/setup.db.ts`, two package scripts.
 
 - [ ] **Step 1: Install the guard**
@@ -697,7 +768,7 @@ Verify the dependency is pinned exactly — no leading `^`:
 node -pe "require('./package.json').devDependencies['@sudobility/test-db-guard']"
 ```
 
-Expected: `1.0.0`
+Expected: `1.0.1`
 
 - [ ] **Step 2: Rename the database-backed test files**
 
@@ -959,7 +1030,7 @@ Two substitutions per repo:
 cd <REPO> && bun add -d -E @sudobility/test-db-guard
 node -pe "require('./package.json').devDependencies['@sudobility/test-db-guard']"
 ```
-Expected: `1.0.0` with no `^`.
+Expected: `1.0.1` with no `^`.
 
 **P2. Classify the test files.** A test file is database-backed if it reaches a
 real connection — directly, or through a helper such as `tests/setup.ts`,
