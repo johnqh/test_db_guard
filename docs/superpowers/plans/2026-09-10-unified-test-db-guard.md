@@ -1266,7 +1266,18 @@ test script the task does not explicitly keep.
 configuration. If it contains anything else, delete only the `[test]` and
 `[test.env]` blocks.
 
-**P11. Write `.env.test`**, committed, with dummy values:
+**P11. Env file — check for real secrets FIRST.**
+
+```bash
+cd <REPO>
+grep -icE "BEGIN (RSA )?PRIVATE KEY|sk_live|rcb_|appl_|production key|AIza" .env.test 2>/dev/null
+sed -E 's/=.*/=<hidden>/' .env.test 2>/dev/null
+```
+
+Every repo in this workspace is **public**. Read the key names before deciding.
+
+**If `.env.test` holds only dummy values** (localhost URL, `test-private-key`,
+a literal hex encryption key), commit it:
 
 ```
 # Loaded by `bun run test:db`. Committed deliberately: no secrets here.
@@ -1274,7 +1285,21 @@ TEST_DATABASE_URL=postgresql://localhost:5432/<DBNAME>
 NODE_ENV=test
 ```
 
-If `.gitignore` excludes `.env.test`, remove that line.
+Remove the `.gitignore` line if present.
+
+**If it holds anything real** — a live API key, a real Firebase private key, an
+admin email list — **leave it gitignored**. Commit `.env.test.example` instead,
+with the same keys and placeholder values, and add `TEST_DATABASE_URL` to the
+developer's local `.env.test` without committing it.
+
+`sudojo_api` is the known case: its `.env.test` carries a RevenueCat key its
+own comment labels "production key", plus a real `FIREBASE_PRIVATE_KEY`,
+`SOLVER_API_KEY`, and `SOLUTION_ENCRYPTION_KEY`. It has never been committed and
+must stay that way. Committing it as this step originally instructed would have
+published a production credential to a public repository.
+
+Verified clean and safe to commit: `shapeshyft_api`, `shaperouter_api`,
+`tapayoka_api`, `music_api`.
 
 **P12. Verify — CI safety.** The check this plan exists for:
 
