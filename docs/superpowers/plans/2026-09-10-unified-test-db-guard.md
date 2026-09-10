@@ -1251,6 +1251,74 @@ Affected repos, confirmed by survey: `shapeshyft_api` (done) and
 `shaperouter_api` only. `webgraph_api` and `sider_api` reference Bun solely
 through `bun:test` in colocated test files, which P4 already handles.
 
+**P8c. Convert `bun:test` mocking — required wherever the repo uses it.** Check:
+
+```bash
+cd <REPO> && grep -rnE "\b(mock\.module|mock\(|spyOn\()" tests/ src/ --include='*.ts' || echo "not needed"
+```
+
+`mock.module("../src/services/x", factory)` becomes `vi.mock("../src/services/x", factory)`,
+and it must live in a **setup file or a test file** — never in an imported
+helper module, because `vi.mock` is hoisted.
+
+Hoisting has a second consequence, hit in Task 8: a factory that closes over a
+module-level `const` fails at runtime with *"cannot access before
+initialization"*, because `vi.mock` is lifted above the declaration. Inline the
+literals inside the factory instead, and leave a comment saying why. Also
+`mock(fn)` → `vi.fn(fn)`, `spyOn(o,"m")` → `vi.spyOn(o,"m")`.
+
+**P8d. Replace `bunfig.toml`'s env loading — required wherever it had
+`[test.env]`.** Check before deleting the file in P10:
+
+```bash
+cd <REPO> && grep -A2 "\[test.env\]" bunfig.toml 2>/dev/null || echo "not needed"
+```
+
+`[test.env] file = ".env.test"` is Bun test-runner config; vitest ignores it.
+Deleting `bunfig.toml` without replacing it makes the suite fail on the first
+unrelated variable it needs (`SOLVER_URL` in Task 8). Load the file from
+`tests/setup.db.ts`, **above** the guard call:
+
+```ts
+function loadEnvTest(): void {
+  const path = new URL("../.env.test", import.meta.url).pathname;
+  if (!existsSync(path)) return;
+  for (const raw of readFileSync(path, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    // Never override a variable already in the environment.
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+```
+
+Two properties are load-bearing, and both were bugs before they were rules:
+
+- **Load `.env.test` only, never `.env`.** Eleven repos have a remote
+  `DATABASE_URL` in `.env`; that file must not be read by tests at all.
+- **Never override an existing variable.** While the loader still clobbered the
+  environment, an explicitly exported hostile `TEST_DATABASE_URL` was silently
+  replaced by the file's safe value and **the refusal did not fire**. Every test
+  passed and the guard was inert. P13 is what catches this — do not skip it.
+
+**P8e. Split a setup file that also exports helpers.** If the repo's existing
+`tests/setup.ts` exports anything test files import (`db`, `resetDb`, fixtures,
+tokens), move those exports to `tests/db-helpers.ts` and repoint the imports.
+A vitest setup file runs for the whole suite; helpers are imported per file.
+Known cases: `sudojo_api` (done), `zerodowntime/craigsnotice_api` (Task 16).
+
 **P9. Rewrite the scripts** so exactly these two exist, plus a watch:
 
 ```json
@@ -1356,7 +1424,7 @@ layout. Run the full procedure.
 - Keep `scripts/setup-test-db.sh`, exposed as `"test:db:setup"`.
 - `bunfig.toml` is `[test]`-only — delete it.
 
-- [ ] P1 install · [ ] P2-P3 classify + rename · [ ] P4 bun:test → vitest · [ ] P5-P6 setup files · [ ] P7-P8 configs · [ ] P8a inline @sudobility · [ ] P8b hono/bun alias · [ ] P9 scripts · [ ] P10 delete bunfig · [ ] P11 .env.test · [ ] P12 CI-safety check · [ ] P13 db checks · [ ] P14 CLAUDE.md · [ ] P15 commit
+- [ ] P1 install · [ ] P2-P3 classify + rename · [ ] P4 bun:test → vitest · [ ] P5-P6 setup files · [ ] P7-P8 configs · [ ] P8a-P8e as needed · [ ] P9 scripts · [ ] P10 delete bunfig · [ ] P11 .env.test · [ ] P12 CI-safety check · [ ] P13 db checks · [ ] P14 CLAUDE.md · [ ] P15 commit
 
 ---
 
@@ -1371,7 +1439,7 @@ layout. Run the full procedure.
 - `bunfig.toml` has `[test]` and `[test.env] file = ".env.test"`. Delete the file; vitest reads `.env.test` via the setup file, not via Bun.
 - `.env.test` is **not** tracked. Create and commit it, and remove the ignore line.
 
-- [ ] P1 · [ ] P2-P3 · [ ] P4 · [ ] P5-P6 · [ ] P7-P8 (+P8a, P8b if needed) · [ ] P9 (drop `test:unit`, `test:integration`) · [ ] P10 · [ ] P11 (new tracked file) · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
+- [ ] P1 · [ ] P2-P3 · [ ] P4 · [ ] P5-P6 · [ ] P7-P8 (+P8a-P8e as needed) · [ ] P9 (drop `test:unit`, `test:integration`) · [ ] P10 · [ ] P11 (new tracked file) · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
 
 ---
 
@@ -1385,7 +1453,7 @@ layout. Run the full procedure.
 - `.env.test` is tracked; edit in place.
 - Current script is `vitest run tests/` with no config file; P7 creates one.
 
-- [ ] P1 · [ ] P2-P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a, P8b if needed) · [ ] P9 · [ ] P10 · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
+- [ ] P1 · [ ] P2-P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a-P8e as needed) · [ ] P9 · [ ] P10 · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
 
 ---
 
@@ -1430,7 +1498,7 @@ layout. Run the full procedure.
 - **Delete `.github/workflows/integration.yml` entirely**, including its Postgres service container. This is the only CI job in the workspace that runs database tests, and the requirement is that none do.
 - P12's collected count must include `src/**` tests, which the current `bun test src` script covers and the new `include` glob preserves.
 
-- [ ] P1 · [ ] P2-P3 · [ ] P4 · [ ] P5-P6 · [ ] P7-P8 (+P8a, P8b if needed) · [ ] P9 (drop `test:integration`) · [ ] **Delete `.github/workflows/integration.yml`** · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
+- [ ] P1 · [ ] P2-P3 · [ ] P4 · [ ] P5-P6 · [ ] P7-P8 (+P8a-P8e as needed) · [ ] P9 (drop `test:integration`) · [ ] **Delete `.github/workflows/integration.yml`** · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
 
 ---
 
@@ -1444,7 +1512,7 @@ layout. Run the full procedure.
 - `drizzle.config.ts` reads `DATABASE_URL`. Leave it alone — it is tooling, not a test.
 - No `vitest.config.ts`; P7 creates one.
 
-- [ ] P1 · [ ] P2-P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a, P8b if needed) · [ ] P9 (drop `test:integration`) · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
+- [ ] P1 · [ ] P2-P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a-P8e as needed) · [ ] P9 (drop `test:integration`) · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
 
 ---
 
@@ -1476,7 +1544,7 @@ LLM provider must still fail with the file's own refusal message.
 - DB files: `src/services/points.test.ts` matched the grep, but with 51 test files the grep is a weak signal here. P2's manual pass matters most in this repo.
 - No `vitest.config.ts`; P7 creates one covering `src/**`.
 
-- [ ] Record baseline pass count · [ ] P1 · [ ] P2-P3 · [ ] P4 (**51 files, manual mocking pass**) · [ ] P5-P6 (**carry `no-ai-calls` into both**) · [ ] Verify no-ai-calls still refuses · [ ] P7-P8 (+P8a, P8b if needed) · [ ] P9 · [ ] P10 · [ ] P11 · [ ] P12 (**compare against baseline**) · [ ] P13 · [ ] P14 · [ ] P15
+- [ ] Record baseline pass count · [ ] P1 · [ ] P2-P3 · [ ] P4 (**51 files, manual mocking pass**) · [ ] P5-P6 (**carry `no-ai-calls` into both**) · [ ] Verify no-ai-calls still refuses · [ ] P7-P8 (+P8a-P8e as needed) · [ ] P9 · [ ] P10 · [ ] P11 · [ ] P12 (**compare against baseline**) · [ ] P13 · [ ] P14 · [ ] P15
 
 ---
 
@@ -1508,7 +1576,7 @@ repo — commit there, not in a repo of its own.
 - Classify carefully: files importing only environment, not `db`, are unit tests. `tests/config.test.ts` asserts on config parsing and is almost certainly a unit test despite matching the grep.
 - `vitest.config.ts` exists without `setupFiles`.
 
-- [ ] P1 · [ ] P2 (**careful: 16 grep hits, most transitive**) · [ ] Extract `tests/db-helpers.ts` · [ ] P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a, P8b if needed) · [ ] P9 · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
+- [ ] P1 · [ ] P2 (**careful: 16 grep hits, most transitive**) · [ ] Extract `tests/db-helpers.ts` · [ ] P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a-P8e as needed) · [ ] P9 · [ ] P11 · [ ] P12 · [ ] P13 · [ ] P14 · [ ] P15
 
 ---
 
@@ -1524,7 +1592,7 @@ repo — commit there, not in a repo of its own.
 - Scripts `test`, `test:unit`, `test:run`, `test:ui`, `test:coverage` collapse to `test`, `test:watch`, `test:db`.
 - P13 will report zero collected files for `test:db`. Confirm the *guard* still fires by running it with a production URL — the failure must occur before collection.
 
-- [ ] P1 · [ ] P2-P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a, P8b if needed) · [ ] P9 · [ ] P11 · [ ] P12 · [ ] P13 (**expect zero db files; guard must still reject prod**) · [ ] P14 · [ ] P15
+- [ ] P1 · [ ] P2-P3 · [ ] P5-P6 · [ ] P7-P8 (+P8a-P8e as needed) · [ ] P9 · [ ] P11 · [ ] P12 · [ ] P13 (**expect zero db files; guard must still reject prod**) · [ ] P14 · [ ] P15
 
 ---
 
@@ -1544,10 +1612,10 @@ For all four, P2 will find nothing to rename. Wire the guard, both configs, and
 both setup files anyway — that is the point of doing them. P13 confirms the
 guard rejects a production URL even with zero DB files collected.
 
-- [ ] Task 18: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a, P8b if needed) · P9 · P11 · P12 · P13 · P14 · P15
-- [ ] Task 19: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a, P8b if needed) · P9 · P11 · P12 · P13 · P14 · P15
-- [ ] Task 20: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a, P8b if needed) · P9 · P11 · P12 · P13 · P14 · P15
-- [ ] Task 21: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a, P8b if needed) · P9 (**drop `test:contract`**) · P11 · P12 · P13 · P14 · P15
+- [ ] Task 18: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 · P11 · P12 · P13 · P14 · P15
+- [ ] Task 19: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 · P11 · P12 · P13 · P14 · P15
+- [ ] Task 20: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 · P11 · P12 · P13 · P14 · P15
+- [ ] Task 21: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 (**drop `test:contract`**) · P11 · P12 · P13 · P14 · P15
 
 ---
 
@@ -1572,8 +1640,8 @@ are the files a new project's author reads first:
   host is refused. Never run in CI.
 ```
 
-- [ ] Task 22: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a, P8b if needed) · P9 · P11 · P12 · P13 · P14 · **README.md** · P15
-- [ ] Task 23: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a, P8b if needed) · P9 · P11 · P12 · P13 · P14 · **README.md** · P15
+- [ ] Task 22: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 · P11 · P12 · P13 · P14 · **README.md** · P15
+- [ ] Task 23: P1 · P2-P3 · P5-P6 · P7-P8 (+P8a-P8e as needed) · P9 · P11 · P12 · P13 · P14 · **README.md** · P15
 
 ---
 
