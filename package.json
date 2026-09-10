@@ -1,6 +1,6 @@
 {
   "name": "@sudobility/test-db-guard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Refuses to run database tests against anything but a localhost database",
   "license": "BUSL-1.1",
   "type": "module",
@@ -13,7 +13,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
